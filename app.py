@@ -15,6 +15,7 @@ import json
 app = Flask(__name__)
 app.secret_key = 'agri-vision-secret-key-2024'
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max
+
 LANG = {
     "en": {
         "welcome": "Welcome to Agri Vision"
