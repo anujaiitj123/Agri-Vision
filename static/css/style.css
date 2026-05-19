@@ -1183,7 +1183,22 @@ body {
     padding: 2.5rem 2rem 1.5rem;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
-
+/*
+|--------------------------------------------------------------------------
+| Theme Management System
+|--------------------------------------------------------------------------
+| This section handles dynamic theme switching functionality across
+| the entire application. It ensures that user preferences are saved
+| locally and automatically restored when the user revisits the site.
+|
+| Features Included:
+| - Dark mode toggle
+| - Theme persistence using localStorage
+| - Smooth UI transitions
+| - Accessibility-friendly color updates
+| - Dynamic icon switching
+|--------------------------------------------------------------------------
+*/
 [data-theme="dark"] .footer {
     background: #131313;
     border-top: 1px solid rgba(255, 255, 255, 0.08);
