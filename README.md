@@ -12,7 +12,6 @@ It helps farmers and researchers make informed decisions about crop management a
 
 </div>
 
----
 
 > 🚀 This module prepares the complete AI-powered crop analysis workflow by handling image preprocessing, initializing prediction models, and validating uploaded crop images before analysis.
 
@@ -48,7 +47,6 @@ It helps farmers and researchers make informed decisions about crop management a
 
 <div align="center">
 
-### 💡 Smart Agriculture • AI Driven • Modern Workflow
 
 </div>
 
