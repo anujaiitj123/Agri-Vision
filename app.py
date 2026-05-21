@@ -943,12 +943,7 @@ def tutorials():
     return render_template("tutorials.html")
 
 
- add-support-page-and-footer-navigation
-# =========================================================
-# Support Page Route
-# Provides centralized help and support access
-# for users interacting with the Agri-Vision platform
-# =========================================================
+
 
 @app.route('/support')
 def support():
