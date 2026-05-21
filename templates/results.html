@@ -9,10 +9,10 @@
 
         <div class="glass-card reveal reveal-fade-up results-card">
             <div class="section-header" style="margin-bottom: 1.5rem;">
-                <h1 style="font-size: 2rem; margin-bottom: 0.5rem; color: var(--emerald-green)">
+                <h1 class="results-main-title"></h1>
                     <i class="fas fa-robot"></i> Analysis Results
                 </h1>
-                <p style="font-size: 0.95rem;">
+                <p class="results-subtitle">
                     Your crop image was analyzed using deep learning models for disease detection and growth stage recognition.
                 </p>
             </div>
@@ -135,7 +135,12 @@
                 <tr class="reveal reveal-fade-in">
                     <td>{{ box.class_name }}</td>
                     <td>{{ box.confidence|default(0)|float|round(3) }}</td>
-                    <td>[{{ box.bbox[0]|int }}, {{ box.bbox[1]|int }}, {{ box.bbox[2]|int }}, {{ box.bbox[3]|int }}]</td>
+                    <td class="bbox-cell">
+                        [{{ box.bbox[0]|int }},<br>
+                        {{ box.bbox[1]|int }},<br>
+                        {{ box.bbox[2]|int }},<br>
+                        {{ box.bbox[3]|int }}]
+                    </td>
                 </tr>
                 {% endfor %}
             </table>
