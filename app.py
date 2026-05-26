@@ -1212,29 +1212,11 @@ def set_language(lang):
     return redirect(url_for("index", lang=lang))
 
 
-@app.template_filter("i18n")
-def i18n_filter(key):
-    from flask import request
-    import os
-    import json
-    
-    lang = request.cookies.get('lang', 'en')
-    
-    # Absolute path to dictionary
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(base_dir, 'static', 'js', 'i18n.json')
-    
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            
-        # Get language dictionary, fallback to English
-        lang_data = data.get(lang, data.get('en', {}))
-        
-        # Get the translated key, fallback to original key
-        return lang_data.get(key, data.get('en', {}).get(key, key))
-    except (Exception, FileNotFoundError):
-        return key
+@app.template_filter("datetimeformat")
+def datetimeformat_filter(value):
+    if value == "now":
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return value
 
 
 @app.route("/tutorials")
@@ -1535,4 +1517,3 @@ if __name__ == "__main__":
     load_models()
     is_debug = os.getenv("FLASK_DEBUG", "False").lower() in ("true", "1", "t")
     app.run(debug=is_debug, host="0.0.0.0", port=5000)
-

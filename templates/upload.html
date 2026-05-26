@@ -5,8 +5,8 @@
     <div class="container" style="padding-bottom: 4rem;">
         <div class="glass-card reveal reveal-fade-up upload-card">
             <div class="section-header" style="margin-bottom: 1.5rem;">
-                <h1 style="font-size: 2rem; margin-bottom: 0.5rem;">📸 Analyze Crop</h1>
-                <p style="font-size: 0.95rem;">Upload a high-resolution image of your cotton crop for instant AI diagnostics.</p>
+                <h1 style="font-size: 2rem; margin-bottom: 0.5rem;" data-i18n="up_title">📸 Analyze Crop</h1>
+                <p style="font-size: 0.95rem;" data-i18n="up_desc">Upload a high-resolution image of your cotton crop for instant AI diagnostics.</p>
             </div>
             
             <form action="/analyze" method="POST" enctype="multipart/form-data">
@@ -17,11 +17,11 @@
                     border-radius: 12px;
                     border: 1px solid #bee5eb;
                 ">
-                    <h4 style="margin: 0 0 0.5rem; color: #0c5460; font-size: 1rem;">
+                    <h4 style="margin: 0 0 0.5rem; color: #0c5460; font-size: 1rem;" data-i18n="up_loc_title">
                         ☁️ Add Location for Weather-Aware Recommendations
-                        <span style="font-weight:400; font-size:0.85rem;">(optional)</span>
+                        <span style="font-weight:400; font-size:0.85rem;" data-i18n="up_loc_opt">(optional)</span>
                     </h4>
-                    <p style="margin: 0 0 0.8rem; color: #6c757d; font-size: 0.85rem;">
+                    <p style="margin: 0 0 0.8rem; color: #6c757d; font-size: 0.85rem;" data-i18n="up_loc_desc">
                         Type your city or use GPS — we'll fetch live weather for smarter crop advice.
                     </p>
 
@@ -33,6 +33,7 @@
                                 name="city"
                                 id="city-input"
                                 placeholder="e.g. Nagpur, Maharashtra"
+                                data-i18n="[placeholder]up_loc_placeholder"
                                 autocomplete="off"
                                 oninput="onCityInput(this)"
                                 style="
@@ -58,6 +59,7 @@
                             type="button"
                             id="use-location-btn"
                             onclick="useMyLocation()"
+                            data-i18n="up_loc_btn"
                             style="
                                 padding: 0.5rem 1rem; background: #17a2b8; color: white;
                                 border: none; border-radius: 8px; cursor: pointer;

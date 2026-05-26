@@ -1,4 +1,4 @@
-﻿{% extends "index.html" %}
+{% extends "index.html" %}
 {% block content %}
 
 {% set disease = results.disease|default({}) %}
@@ -13,10 +13,10 @@
 
       <!-- Header -->
       <div class="section-header" style="margin-bottom: 1.5rem;">
-        <h1 style="font-size: 2rem; margin-bottom: 0.5rem; color: var(--emerald-green);">
+        <h1 style="font-size: 2rem; margin-bottom: 0.5rem; color: var(--emerald-green);" data-i18n="res_title">
           <i class="fas fa-robot"></i> Analysis Results
         </h1>
-        <p style="font-size: 0.95rem;">
+        <p style="font-size: 0.95rem;" data-i18n="res_desc">
           Your crop image was analyzed using deep learning models for disease detection and growth stage recognition.
         </p>
       </div>
@@ -28,6 +28,7 @@
           <img
             id="result-img"
             alt="Analyzed Crop Image"
+            data-i18n="[alt]res_img"
             src="data:image/jpeg;base64,{{ image_b64 }}"
             class="result-img"
           />
@@ -53,6 +54,7 @@
         <button
           id="toggle-ai-focus"
           class="btn btn-secondary"
+          data-i18n="res_show_ai"
           style="
             position: absolute; bottom: 15px; left: 50%;
             transform: translateX(-50%); z-index: 10;
@@ -70,19 +72,21 @@
 
       <!-- Disease Classification -->
       <div class="result-card">
-        <h2 class="results-section-title">
-          <i class="fas fa-stethoscope"></i> {{ 'res_disease_title' | i18n }}
+        <h2 class="results-section-title" data-i18n="res_disease_title">
+          <i class="fas fa-stethoscope"></i> Disease Classification (ResNet50)
         </h2>
         <ul class="results-list">
           <li>
-            <b>{{ 'res_predicted' | i18n }}:</b>
-            {{ disease.predicted_class|default("Unknown") }}
+            <b data-i18n="res_predicted">Predicted Class:</b>
+            <span data-i18n="{{ disease.predicted_class|default('Unknown') }}">
+              {{ disease.predicted_class|default("Unknown") }}
+            </span>
             <span style="color: var(--text-muted);">
               (Confidence: {{ disease.confidence|default(0)|float|round(2) }})
             </span>
           </li>
           <li>
-            <b>{{ 'res_health' | i18n }}:</b>
+            <b data-i18n="res_health">Health Score:</b>
             <div class="health-bar">
               <div class="health-fill" style="width: {{ disease.health_score|default(0)|float|round(0) }}%;"></div>
             </div>
@@ -101,12 +105,12 @@
 
         <table class="results-table reveal-stagger">
           <tr class="reveal reveal-fade-in">
-            <th>Disease Class</th>
-            <th>Probability</th>
+            <th data-i18n="res_tbl_disease">Disease Class</th>
+            <th data-i18n="res_tbl_prob">Probability</th>
           </tr>
           {% for cname, prob in disease_confidences.items() %}
           <tr class="reveal reveal-fade-in">
-            <td>{{ cname }}</td>
+            <td data-i18n="{{ cname }}">{{ cname }}</td>
             <td>{{ prob|default(0)|float|round(4) }}</td>
           </tr>
           {% endfor %}
@@ -115,7 +119,7 @@
 
       <!-- Growth Stage Detection -->
       <div class="result-card">
-        <h2 class="results-section-title">
+        <h2 class="results-section-title" data-i18n="res_growth_title">
           <i class="fas fa-seedling"></i> Growth Stage Detection (YOLOv8)
         </h2>
         
@@ -180,7 +184,7 @@
                   text-align: center;
                   max-width: 50px;
                   line-height: 1.1;
-              ">{{ stage }}</span>
+              " data-i18n="{{ stage }}">{{ stage }}</span>
             </div>
             {% if is_current %}{% set found_current = true %}{% endif %}
           {% endfor %}
@@ -189,7 +193,10 @@
         {% if growth.main_class %}
         <ul class="results-list">
           <li>
-            <b>Main Stage:</b> {{ growth.main_class }}
+            <b data-i18n="res_main_stage">Main Stage:</b>
+            <span data-i18n="{{ growth.main_class|default('Unknown') }}">
+              {{ growth.main_class|default("Unknown") }}
+            </span>
             <span style="color: var(--text-muted);">
               (Confidence: {{ growth.confidence|default(0)|float|round(2) }})
             </span>
@@ -197,13 +204,13 @@
         </ul>
         <table class="results-table reveal-stagger">
           <tr class="reveal reveal-fade-in">
-            <th>Stage Class</th>
-            <th>Confidence</th>
-            <th>BBox</th>
+            <th data-i18n="res_tbl_stage">Stage Class</th>
+            <th data-i18n="res_tbl_conf">Confidence</th>
+            <th data-i18n="res_tbl_bbox">BBox</th>
           </tr>
           {% for box in growth_boxes %}
           <tr class="reveal reveal-fade-in">
-            <td>{{ box.class_name }}</td>
+            <td data-i18n="{{ box.class_name }}">{{ box.class_name }}</td>
             <td>{{ box.confidence|default(0)|float|round(3) }}</td>
             <td>[{{ box.bbox[0]|int }}, {{ box.bbox[1]|int }}, {{ box.bbox[2]|int }}, {{ box.bbox[3]|int }}]</td>
           </tr>
@@ -222,7 +229,7 @@
           border: 1px solid #dee2e6; border-radius: 16px;
           box-shadow: 0 2px 8px rgba(0,0,0,0.06);
       ">
-        <h3 style="margin: 0 0 1rem; color: #343a40; font-size: 1.1rem;">
+        <h3 style="margin: 0 0 1rem; color: #343a40; font-size: 1.1rem;" data-i18n="res_weather_title">
           ☁️ Current Weather Conditions
         </h3>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1rem;">
@@ -231,7 +238,7 @@
           <div class="w-stat" style="text-align:center; padding:0.75rem; background:white; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08);">
             <div style="font-size:1.8rem;">🌡️</div>
             <div style="font-size:1.3rem; font-weight:600; color:#e74c3c;">{{ weather.temperature }}°C</div>
-            <div style="font-size:0.75rem; color:#6c757d;">Temperature</div>
+            <div style="font-size:0.75rem; color:#6c757d;" data-i18n="Temperature">Temperature</div>
           </div>
           {% endif %}
 
@@ -239,7 +246,7 @@
           <div class="w-stat" style="text-align:center; padding:0.75rem; background:white; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08);">
             <div style="font-size:1.8rem;">💧</div>
             <div style="font-size:1.3rem; font-weight:600; color:#3498db;">{{ weather.humidity }}%</div>
-            <div style="font-size:0.75rem; color:#6c757d;">Humidity</div>
+            <div style="font-size:0.75rem; color:#6c757d;" data-i18n="Humidity">Humidity</div>
           </div>
           {% endif %}
 
@@ -247,7 +254,7 @@
           <div class="w-stat" style="text-align:center; padding:0.75rem; background:white; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08);">
             <div style="font-size:1.8rem;">🌧️</div>
             <div style="font-size:1.3rem; font-weight:600; color:#2980b9;">{{ weather.precipitation }} mm</div>
-            <div style="font-size:0.75rem; color:#6c757d;">Precipitation</div>
+            <div style="font-size:0.75rem; color:#6c757d;" data-i18n="Precipitation">Precipitation</div>
           </div>
           {% endif %}
 
@@ -255,7 +262,7 @@
           <div class="w-stat" style="text-align:center; padding:0.75rem; background:white; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08);">
             <div style="font-size:1.8rem;">💨</div>
             <div style="font-size:1.3rem; font-weight:600; color:#27ae60;">{{ (weather.wind_speed|default(0))|round(0)|int }} km/h</div>
-            <div style="font-size:0.75rem; color:#6c757d;">Wind Speed</div>
+            <div style="font-size:0.75rem; color:#6c757d;" data-i18n="Wind Speed">Wind Speed</div>
           </div>
           {% endif %}
 
@@ -263,14 +270,14 @@
           <div class="w-stat" style="text-align:center; padding:0.75rem; background:white; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08);">
             <div style="font-size:1.8rem;">☀️</div>
             <div style="font-size:1.3rem; font-weight:600; color:#f39c12;">{{ weather.uv_index }}</div>
-            <div style="font-size:0.75rem; color:#6c757d;">UV Index</div>
+            <div style="font-size:0.75rem; color:#6c757d;" data-i18n="UV Index">UV Index</div>
           </div>
           {% endif %}
 
           <div class="w-stat" style="text-align:center; padding:0.75rem; background:white; border-radius:10px; box-shadow:0 1px 4px rgba(0,0,0,0.08);">
             <div style="font-size:1.8rem;">{{ weather.icon|default('🌤️') }}</div>
             <div style="font-size:0.9rem; font-weight:500; color:#495057;">{{ weather.description|default('N/A') }}</div>
-            <div style="font-size:0.75rem; color:#6c757d;">Condition</div>
+            <div style="font-size:0.75rem; color:#6c757d;" data-i18n="Condition">Condition</div>
           </div>
 
         </div>
@@ -283,14 +290,14 @@
       <!-- Yield Estimate -->
       {% if yield_estimate %}
       <div class="result-card" style="background: linear-gradient(135deg, #f0fff4 0%, #e6ffed 100%); border: 1px solid #b7ebc0;">
-        <h2 class="results-section-title">
+        <h2 class="results-section-title" data-i18n="res_yield_title">
           <i class="fas fa-chart-line"></i> Interactive Yield Calculator
         </h2>
         
         <!-- Interactive Acreage Slider -->
         <div class="no-print" style="margin-bottom: 1.5rem; padding: 1.25rem; background: white; border-radius: 12px; border: 1px solid #b7ebc0; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem;">
-            <label for="acreage-slider" style="font-weight: 700; color: #1a7f37; font-size: 0.95rem;">
+            <label for="acreage-slider" style="font-weight: 700; color: #1a7f37; font-size: 0.95rem;" data-i18n="res_yield_adj">
               <i class="fas fa-expand-arrows-alt"></i> Adjust Farm Size (Acres)
             </label>
             <span id="acreage-display" style="font-weight: 800; color: #ffffff; background: #1a7f37; padding: 4px 12px; border-radius: 20px; font-size: 0.9rem; box-shadow: 0 2px 5px rgba(26,127,55,0.2);">
@@ -320,7 +327,7 @@
 
         <div style="display:flex; flex-wrap:wrap; gap:1rem; margin-bottom:1.2rem;">
           <div style="flex:1; min-width:150px; text-align:center; background:white; border-radius:12px; padding:1.2rem; box-shadow:0 3px 12px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.02);">
-            <div style="font-size:0.75rem; color:#6c757d; margin-bottom:0.4rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Per Acre</div>
+            <div style="font-size:0.75rem; color:#6c757d; margin-bottom:0.4rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;" data-i18n="res_yield_per_acre">Per Acre</div>
             <div style="font-size:1.6rem; font-weight:800; color:#1a7f37; margin-bottom: 0.2rem;">
               {{ yield_estimate.yield_min_acre }}–{{ yield_estimate.yield_max_acre }}
             </div>
@@ -331,7 +338,7 @@
           </div>
 
           <div style="flex:1; min-width:150px; text-align:center; background: linear-gradient(145deg, #ffffff, #f8fff9); border-radius:12px; padding:1.2rem; box-shadow:0 3px 12px rgba(0,0,0,0.08); border: 2px solid #b7ebc0;">
-            <div style="font-size:0.75rem; color:#1a7f37; margin-bottom:0.4rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Total Field Estimate</div>
+            <div style="font-size:0.75rem; color:#1a7f37; margin-bottom:0.4rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;" data-i18n="res_yield_total">Total Field Estimate</div>
             <div style="font-size:1.8rem; font-weight:900; color:#1a7f37; margin-bottom: 0.2rem;" id="total-yield-display">
               {{ yield_estimate.yield_min_total }}–{{ yield_estimate.yield_max_total }}
             </div>
@@ -342,14 +349,14 @@
           </div>
 
           <div style="flex:1; min-width:150px; text-align:center; background:white; border-radius:12px; padding:1.2rem; box-shadow:0 3px 12px rgba(0,0,0,0.06); border: 1px solid rgba(0,0,0,0.02);">
-            <div style="font-size:0.75rem; color:#6c757d; margin-bottom:0.5rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Confidence</div>
+            <div style="font-size:0.75rem; color:#6c757d; margin-bottom:0.5rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;" data-i18n="res_yield_conf">Confidence</div>
             <div style="font-size:1.3rem; font-weight:800; color:{{ yield_estimate.confidence_color }}; margin-bottom: 0.4rem;">
               {{ yield_estimate.confidence_label }}
             </div>
             <div style="background:#e9ecef; border-radius:10px; height:8px; margin:0.5rem auto; width:85%; overflow: hidden;">
               <div style="background:{{ yield_estimate.confidence_color }}; width:{{ yield_estimate.confidence_pct }}%; height:100%; border-radius:10px; transition: width 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);"></div>
             </div>
-            <div style="font-size:0.8rem; color:#495057; font-weight: 700;">{{ yield_estimate.confidence_pct }}% reliability</div>
+            <div style="font-size:0.8rem; color:#495057; font-weight: 700;"><span id="rel-pct">{{ yield_estimate.confidence_pct }}</span>% <span data-i18n="res_yield_reliability">reliability</span></div>
           </div>
         </div>
         
@@ -383,7 +390,7 @@
         </div>
 
         <details style="font-size:0.82rem; color:#6c757d; cursor:pointer;">
-          <summary style="font-weight:600; color:#495057; margin-bottom:0.5rem;">📐 How this was calculated</summary>
+          <summary style="font-weight:600; color:#495057; margin-bottom:0.5rem;" data-i18n="res_yield_calc">📐 How this was calculated</summary>
           <div style="margin-top:0.5rem; display:flex; flex-direction:column; gap:0.3rem;">
             <div>🌱 <b>Growth Stage</b> ({{ yield_estimate.growth_stage }}): ×{{ yield_estimate.stage_multiplier }} — {{ yield_estimate.stage_note }}</div>
             <div>🏥 <b>Crop Health</b> ({{ yield_estimate.health_score }}%): ×{{ yield_estimate.health_multiplier }} — {{ yield_estimate.health_note }}</div>
@@ -400,12 +407,12 @@
 
       <!-- Recommendations -->
       <div class="result-card">
-        <h2 class="results-section-title">
+        <h2 class="results-section-title" data-i18n="res_recs">
           <i class="fas fa-lightbulb"></i> Recommendations
         </h2>
         <ul class="results-list reveal-stagger">
           {% for rec in results.recommendations %}
-          <li class="reveal reveal-slide-left">{{ rec }}</li>
+          <li class="reveal reveal-slide-left" data-i18n="{{ rec }}">{{ rec }}</li>
           {% endfor %}
         </ul>
       </div>
@@ -413,12 +420,12 @@
       <!-- Farmer-Friendly Insights -->
       {% if results.farmer_insights %}
       <div class="result-card">
-        <h2 class="results-section-title">
+        <h2 class="results-section-title" data-i18n="res_insights_title">
           <i class="fas fa-comment-dots"></i> Farmer-Friendly Insights
         </h2>
         <ul class="results-list reveal-stagger">
           {% for insight in results.farmer_insights %}
-          <li class="reveal reveal-slide-left"><b>•</b> {{ insight }}</li>
+          <li class="reveal reveal-slide-left"><b>•</b> <span data-i18n="{{ insight }}">{{ insight }}</span></li>
           {% endfor %}
         </ul>
       </div>
@@ -427,7 +434,7 @@
       <!-- Advanced Recommendations -->
       {% if results.advanced_recommendations %}
       <div class="result-card">
-        <h2 class="results-section-title">
+        <h2 class="results-section-title" data-i18n="res_adv_recs_title">
           <i class="fas fa-lightbulb"></i> AI Recommendation System
         </h2>
         <ul class="results-list reveal-stagger">
@@ -441,15 +448,15 @@
 
       <!-- Footer -->
       <div style="display:flex; justify-content:flex-end; gap:1rem; margin-top:2rem; margin-bottom:2rem;">
-        <button onclick="readInsights()" class="upload-btn" style="padding:0.5rem 1rem; font-size:0.9rem; background:var(--secondary-green);">
+        <button onclick="readInsights()" class="upload-btn" data-i18n="res_voice" style="padding:0.5rem 1rem; font-size:0.9rem; background:var(--secondary-green);">
           <i class="fas fa-volume-up"></i> Voice Assistant
         </button>
-        <button onclick="exportToPDF()" class="upload-btn" style="padding:0.5rem 1rem; font-size:0.9rem;">
+        <button onclick="exportToPDF()" class="upload-btn" data-i18n="res_pdf" style="padding:0.5rem 1rem; font-size:0.9rem;">
           <i class="fas fa-file-pdf"></i> Download PDF Report
         </button>
       </div>
 
-      <div class="results-footer"><b>Analysis Time:</b> {{ timestamp }}</div>
+      <div class="results-footer"><b data-i18n="res_time">Analysis Time:</b> {{ timestamp }}</div>
 
       <details class="results-details">
         <summary class="results-summary">Show Full Model Output (JSON)</summary>
@@ -495,7 +502,13 @@ document.addEventListener("DOMContentLoaded", function () {
       rect.setAttribute('stroke-width', '2');
       svg.appendChild(rect);
       var label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-      label.textContent = "{{ box.class_name }} ({{ box.confidence|default(0)|float|round(2) }})";
+      var tspanName = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+      tspanName.setAttribute('data-i18n', '{{ box.class_name }}');
+      tspanName.textContent = "{{ box.class_name }}";
+      label.appendChild(tspanName);
+      var tspanConf = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+      tspanConf.textContent = " ({{ box.confidence|default(0)|float|round(2) }})";
+      label.appendChild(tspanConf);
       label.setAttribute('x', x1 + 2);
       label.setAttribute('y', Math.max(y1 - 8, 12));
       label.setAttribute('fill', '#e51d22');
