@@ -10,8 +10,10 @@ import re
 import threading
 import json
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
+from collections import defaultdict
+from io import BytesIO
 
 import cv2
 import numpy as np
@@ -39,7 +41,17 @@ from flask import (
 from flask_cors import CORS
 from flasgger import Swagger
 from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from jinja2 import Environment, FileSystemLoader
+
+# redis and rate limiting imports
+import redis
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+from model_registry import registry
+from services.weather_service import generate_weather_recommendations, geocode_city, get_weather
+from services.yield_service import estimate_yield
 
 load_dotenv()
 
@@ -67,7 +79,6 @@ except (redis.ConnectionError, ModuleNotFoundError) as err:
     logger.warning(f"caching layer bypass active: {err}")
     redis_client = None
     
-    # structural placeholder decorator if flask_limiter library is physically missing from context environment
     class DummyLimiter:
         def limit(self, *args, **kwargs):
             return lambda f: f
@@ -79,6 +90,19 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 from models import db
 db.init_app(app)
 
+# --- Login Manager Configuration ---
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+login_manager.login_message = 'Please log in to access this page.'
+login_manager.login_message_category = 'info'
+
+@login_manager.user_loader
+def load_user(user_id):
+    from models import User
+    return User.query.get(user_id)
+
+# --- Security Configuration ---
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  
 
@@ -762,6 +786,291 @@ def index():
     lang = request.args.get("lang", "en")
     return render_template("index.html", text=LANG.get(lang, LANG["en"]), lang=lang)
 
+@app.route("/set-language/<lang>")
+def set_language(lang):
+    return redirect(url_for("index", lang=lang))
+
+@app.template_filter("datetimeformat")
+def datetimeformat_filter(value):
+    if value == "now":
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return value
+
+@app.route("/tutorials")
+def tutorials():
+    return render_template("tutorials.html")
+
+@app.route("/support")
+def support():
+    return render_template("support.html")
+
+@app.route("/stories")
+def stories():
+    return render_template("stories.html")
+
+@app.route("/model-admin")
+@login_required
+def admin_dashboard():
+    if not current_user.is_researcher():
+        flash('Access denied. Researchers and Admins only.', 'danger')
+        return redirect(url_for('index'))
+    return render_template("admin.html")
+
+# --- Model Management Admin Endpoints ---
+
+@app.route('/admin/models', methods=['GET'])
+def list_models():
+    """List all registered models with their metadata"""
+    model_type = request.args.get('type')
+    try:
+        models = registry.list_models(model_type)
+        return jsonify({
+            "status": "success",
+            "models": models,
+            "ab_test_enabled": registry.ab_test_enabled,
+            "rollback_threshold": registry.rollback_threshold
+        })
+    except Exception as e:
+        logger.error(f"Error listing models: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/models/active', methods=['GET'])
+def get_active_models():
+    """Get currently active models"""
+    try:
+        active_resnet = registry.get_active_model("resnet")
+        active_yolo = registry.get_active_model("yolo")
+        return jsonify({
+            "status": "success",
+            "active_models": {
+                "resnet": active_resnet.to_dict() if active_resnet else None,
+                "yolo": active_yolo.to_dict() if active_yolo else None
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting active models: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/models/register', methods=['POST'])
+def register_model():
+    """Register a new model version"""
+    try:
+        data = request.get_json()
+        required_fields = ['model_type', 'version', 'path']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+        
+        metadata = registry.register_model(
+            model_type=data['model_type'],
+            version=data['version'],
+            path=data['path'],
+            accuracy=data.get('accuracy', 0.0),
+            dataset_version=data.get('dataset_version', 'unknown'),
+            parameters=data.get('parameters', 0),
+            is_active=data.get('is_active', False),
+            ab_test_ratio=data.get('ab_test_ratio', 0.0)
+        )
+        return jsonify({
+            "status": "success",
+            "message": f"Model {data['model_type']} version {data['version']} registered successfully",
+            "metadata": metadata.to_dict()
+        })
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.error(f"Error registering model: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/models/activate', methods=['POST'])
+def activate_model():
+    """Set a model version as active"""
+    try:
+        data = request.get_json()
+        required_fields = ['model_type', 'version']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+        
+        registry.set_active_model(data['model_type'], data['version'])
+        return jsonify({
+            "status": "success",
+            "message": f"Model {data['model_type']} version {data['version']} activated successfully"
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logger.error(f"Error activating model: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/models/delete', methods=['DELETE'])
+def delete_model():
+    """Delete a model version"""
+    try:
+        data = request.get_json()
+        required_fields = ['model_type', 'version']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+        
+        registry.delete_model(data['model_type'], data['version'])
+        return jsonify({
+            "status": "success",
+            "message": f"Model {data['model_type']} version {data['version']} deleted successfully"
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error deleting model: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/models/ab-testing', methods=['POST'])
+def toggle_ab_testing():
+    """Enable or disable A/B testing"""
+    try:
+        data = request.get_json()
+        enabled = data.get('enabled', True)
+        registry.enable_ab_testing(enabled)
+        return jsonify({
+            "status": "success",
+            "message": f"A/B testing {'enabled' if enabled else 'disabled'}",
+            "ab_test_enabled": registry.ab_test_enabled
+        })
+    except Exception as e:
+        logger.error(f"Error toggling A/B testing: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/models/ab-ratio', methods=['POST'])
+def set_ab_ratio():
+    """Set A/B testing ratio for a model version"""
+    try:
+        data = request.get_json()
+        required_fields = ['model_type', 'version', 'ratio']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+        
+        registry.set_ab_test_ratio(data['model_type'], data['version'], data['ratio'])
+        return jsonify({
+            "status": "success",
+            "message": f"A/B test ratio for {data['model_type']} version {data['version']} set to {data['ratio']}"
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error setting A/B ratio: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/models/metrics', methods=['GET'])
+def get_model_metrics():
+    """Get performance metrics for all models"""
+    try:
+        models = registry.list_models()
+        return jsonify({
+            "status": "success",
+            "metrics": models
+        })
+    except Exception as e:
+        logger.error(f"Error getting model metrics: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/models/rollback-threshold', methods=['POST'])
+def set_rollback_threshold():
+    """Set automatic rollback threshold"""
+    try:
+        data = request.get_json()
+        threshold = data.get('threshold')
+        if threshold is None:
+            return jsonify({"error": "Missing required field: threshold"}), 400
+        
+        if not 0.0 <= threshold <= 1.0:
+            return jsonify({"error": "Threshold must be between 0.0 and 1.0"}), 400
+        
+        registry.rollback_threshold = threshold
+        registry.save_config()
+        return jsonify({
+            "status": "success",
+            "message": f"Rollback threshold set to {threshold}",
+            "rollback_threshold": registry.rollback_threshold
+        })
+    except Exception as e:
+        logger.error(f"Error setting rollback threshold: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/admin/models/export/pdf', methods=['GET'])
+def export_pdf():
+    """Export model metrics as PDF"""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet
+
+        models = registry.list_models()
+        
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        elements = []
+        styles = getSampleStyleSheet()
+
+        title = Paragraph("Model Performance Report", styles['Title'])
+        elements.append(title)
+        elements.append(Spacer(1, 12))
+
+        date = Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal'])
+        elements.append(date)
+        elements.append(Spacer(1, 12))
+
+        table_data = [['Model Type', 'Version', 'Accuracy', 'Requests', 'Success Rate', 'Avg Confidence', 'Avg Time', 'Status']]
+        
+        if models:
+            for model_type in models:
+                for model in models[model_type]:
+                    metrics = model.performance_metrics
+                    success_rate = (metrics.successful_predictions / metrics.total_requests * 100) if metrics.total_requests > 0 else 0
+                    table_data.append([
+                        model_type.capitalize(),
+                        model.version,
+                        f"{model.accuracy * 100:.2f}%",
+                        str(metrics.total_requests),
+                        f"{success_rate:.1f}%",
+                        f"{metrics.avg_confidence * 100:.1f}%",
+                        f"{metrics.avg_inference_time:.3f}s",
+                        'Active' if model.is_active else 'Inactive'
+                    ])
+
+        table = Table(table_data)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        
+        elements.append(table)
+        doc.build(elements)
+        
+        buffer.seek(0)
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=f'model_metrics_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf',
+            mimetype='application/pdf'
+        )
+    except ImportError:
+        return jsonify({"error": "reportlab not installed. Install with: pip install reportlab"}), 500
+    except Exception as e:
+        logger.error(f"Error generating PDF: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/history")
+def history():
+    return render_template("history.html")
+
 @app.route("/health")
 def health():
     ensure_models_loaded()
@@ -774,8 +1083,356 @@ def health():
         "models": diagnostics,
     }), status_code
 
+@app.route("/analyze", methods=["GET", "POST"])
+@login_required
+def analyze():
+    if request.method == "POST":
+        if "file" not in request.files:
+            flash("No file uploaded", "error")
+            return redirect(request.url)
+
+        file = request.files["file"]
+        if file.filename == "":
+            flash("No file selected", "error")
+            return redirect(request.url)
+
+        if not is_allowed_image(file.filename):
+            flash("Invalid file type. Please upload an image (PNG, JPG, JPEG, GIF)", "error")
+            return redirect(request.url)
+
+        try:
+            safe_filename, image, image_rgb = read_uploaded_image(file)
+            compressed_rgb = resize_image(image_rgb, MAX_INFERENCE_DIMENSION)
+            results = analyze_image(compressed_rgb)
+
+            lat = request.form.get("lat", type=float)
+            lon = request.form.get("lon", type=float)
+            city = request.form.get("city", type=str)
+            weather = None
+
+            if lat is not None and lon is not None:
+                owm_key = os.getenv("OPENWEATHER_API_KEY")
+                weather = get_weather(lat, lon, owm_key)
+            elif city:
+                geo = geocode_city(city)
+                if geo:
+                    owm_key = os.getenv("OPENWEATHER_API_KEY")
+                    weather = get_weather(geo["lat"], geo["lon"], owm_key)
+
+            if weather and results.get("disease") and results.get("growth"):
+                results["recommendations"] = (results.get("recommendations", []) + generate_weather_recommendations(weather))[:6]
+                results["weather"] = weather
+
+            if results.get("error"):
+                raise ValueError(results["error"])
+
+            predicted_class = results.get("disease", {}).get("predicted_class", "")
+            disease_info = disease_info_map.get(predicted_class, {})
+
+            return render_template(
+                "results.html",
+                results=results,
+                filename=safe_filename,
+                image_b64=encode_image_for_display(image_rgb),
+                img_shape={"width": image.shape[1], "height": image.shape[0]},
+                raw_json=json.dumps(results, indent=2),
+                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                weather=weather,
+                grad_cam_image_b64=results.get("grad_cam_image_b64"),
+                heatmap_only_b64=results.get("heatmap_only_b64"),
+                disease_info=disease_info,
+            )
+        except Exception as exc:
+            logger.error("Analysis error: %s", exc)
+            flash(f"Error during analysis: {str(exc)}", "error")
+            return redirect(request.url)
+
+    return render_template("upload.html")
+
+@app.route("/api/explain", methods=["POST"])
+def api_explain():
+    if "file" not in request.files:
+        return jsonify({"status": "error", "error": "No file uploaded"}), 400
+    
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({"status": "error", "error": "No file selected"}), 400
+        
+    if not is_allowed_image(file.filename):
+        return jsonify({"status": "error", "error": "Invalid file type. Please upload an image."}), 400
+        
+    try:
+        _, image, image_rgb = read_uploaded_image(file)
+        compressed_rgb = resize_image(image_rgb, MAX_INFERENCE_DIMENSION)
+        
+        results = analyze_image(compressed_rgb)
+        
+        if "error" in results:
+            return jsonify({"status": "error", "error": results["error"]}), 500
+            
+        disease_result = results.get("disease", {})
+        
+        return jsonify({
+            "status": "success",
+            "heatmap_b64": results.get("grad_cam_image_b64"),
+            "heatmap_only_b64": results.get("heatmap_only_b64"),
+            "target_layer": "ResNet50 layer4[-1]",
+            "image_b64": encode_image_for_display(compressed_rgb),
+            "predicted_class": disease_result.get("predicted_class", "Unknown"),
+            "confidence": disease_result.get("confidence", 0.0)
+        })
+    except Exception as exc:
+        logger.error("Error in API explain endpoint: %s", exc)
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+@app.route("/comparison", methods=["GET", "POST"])
+def comparison():
+    error_message = None
+    old_filename, new_filename, old_image, new_image = None, None, None, None
+
+    if request.method == "POST":
+        required_files = {"last_week_image": "Last Week Field Image", "current_week_image": "Current Week Field Image"}
+        for field_name, label in required_files.items():
+            if field_name not in request.files:
+                flash(f"{label} is required", "error")
+                return redirect(request.url)
+            uploaded_file = request.files[field_name]
+            if uploaded_file.filename == "":
+                flash(f"Please select a file for {label}", "error")
+                return redirect(request.url)
+            if not is_allowed_image(uploaded_file.filename):
+                flash(f"Invalid file type for {label}. Please upload PNG, JPG, JPEG, or GIF.", "error")
+                return redirect(request.url)
+
+        try:
+            last_week_file = request.files["last_week_image"]
+            current_week_file = request.files["current_week_image"]
+            
+            last_week_hash = calculate_file_hash(last_week_file)
+            current_week_hash = calculate_file_hash(current_week_file)
+            
+            if last_week_hash == current_week_hash:
+                error_message = "Duplicate field images detected. Please upload two different images for meaningful comparison analysis."
+                return render_template("comparison.html", error_message=error_message)
+        except Exception as exc:
+            logger.error("Hashing error: %s", exc)
+
+        try:
+            old_filename, old_image, old_rgb = read_uploaded_image(request.files["last_week_image"])
+            new_filename, new_image, new_rgb = read_uploaded_image(request.files["current_week_image"])
+
+            old_results = analyze_image(old_rgb)
+            new_results = analyze_image(new_rgb)
+
+            _, yolo_model = model_manager.load_models()
+            if old_results.get("disease") is None or new_results.get("disease") is None:
+                error_message = "Unable to analyze one or both uploaded images. Please upload valid field images and try again."
+            elif old_results.get("warnings") and new_results.get("warnings") and yolo_model is not None:
+                error_message = "Unable to verify cotton crop in both images. Please upload clearer field photos with visible plants and try again."
+
+            if error_message:
+                return render_template(
+                    "comparison.html",
+                    error_message=error_message,
+                    old_filename=old_filename,
+                    new_filename=new_filename,
+                    old_image_b64=encode_image_for_display(old_image),
+                    new_image_b64=encode_image_for_display(new_image),
+                )
+
+            comparison_result = build_comparison_result(old_results, new_results)
+            return render_template(
+                "comparison.html",
+                old_results=old_results,
+                new_results=new_results,
+                comparison=comparison_result,
+                old_filename=old_filename,
+                new_filename=new_filename,
+                old_image_b64=encode_image_for_display(old_image),
+                new_image_b64=encode_image_for_display(new_image),
+                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        except Exception as exc:
+            logger.error("Comparison analysis error: %s", exc)
+            error_message = "Unable to compare field images right now. Please try again with clearer crop photos."
+            return render_template(
+                "comparison.html",
+                error_message=error_message,
+                old_filename=old_filename,
+                new_filename=new_filename,
+                old_image_b64=encode_image_for_display(old_image) if old_image is not None else None,
+                new_image_b64=encode_image_for_display(new_image) if new_image is not None else None,
+            )
+    return render_template("comparison.html")
+
+@app.route("/demo")
+def demo():
+    try:
+        example_disease_probs = [0.08, 0.02, 0.01, 0.10, 0.04, 0.65, 0.05, 0.05]
+        demo_disease = {
+            "predicted_class": "Healthy",
+            "predicted_class_idx": 5,
+            "confidence": example_disease_probs[5],
+            "model_confidence": round(example_disease_probs[5] * 100, 2),
+            "detected_issue": "Healthy",
+            "all_confidences": {disease_classes[i]: example_disease_probs[i] for i in range(len(disease_classes))},
+            "health_score": 65.0,
+            "raw": [example_disease_probs],
+            "is_uncertain": False,
+            "is_ambiguous": False,
+            "interpretation_message": "Healthy crop detected with moderate confidence."
+        }
+        demo_growth_boxes = [
+            {"class_id": 3, "class_name": "Matured Cotton Boll", "confidence": 0.91, "bbox": [120, 80, 210, 155]},
+            {"class_id": 4, "class_name": "Split Cotton Boll", "confidence": 0.70, "bbox": [300, 120, 390, 210]},
+        ]
+        demo_growth = {
+            "main_class": "Matured Cotton Boll",
+            "main_class_idx": 3,
+            "confidence": 0.91,
+            "boxes": demo_growth_boxes,
+            "raw": demo_growth_boxes,
+        }
+
+        synthetic_bgr = np.zeros((384, 512, 3), dtype=np.uint8)
+        synthetic_bgr[:, :] = [30, 40, 45]
+        cv2.circle(synthetic_bgr, (200, 220), 120, (34, 139, 34), -1)
+        cv2.circle(synthetic_bgr, (320, 260), 100, (46, 139, 87), -1)
+        cv2.circle(synthetic_bgr, (120, 280), 90, (34, 120, 34), -1)
+        cv2.line(synthetic_bgr, (256, 384), (256, 200), (42, 75, 124), 12)
+        cv2.line(synthetic_bgr, (256, 260), (140, 180), (42, 75, 124), 8)
+        cv2.line(synthetic_bgr, (256, 220), (380, 150), (42, 75, 124), 8)
+        cv2.circle(synthetic_bgr, (220, 200), 15, (40, 50, 139), -1)
+        cv2.circle(synthetic_bgr, (215, 195), 5, (20, 30, 80), -1)
+        cv2.circle(synthetic_bgr, (180, 240), 10, (40, 50, 139), -1)
+        cv2.ellipse(synthetic_bgr, (165, 117), (40, 30), 0, 0, 360, (50, 180, 100), -1)
+        cv2.ellipse(synthetic_bgr, (165, 117), (40, 30), 0, 0, 360, (40, 140, 80), 2)
+        cv2.line(synthetic_bgr, (165, 87), (165, 75), (42, 75, 124), 4)
+        cv2.circle(synthetic_bgr, (330, 165), 20, (245, 245, 245), -1)
+        cv2.circle(synthetic_bgr, (360, 165), 20, (245, 245, 245), -1)
+        cv2.circle(synthetic_bgr, (345, 150), 20, (255, 255, 255), -1)
+        cv2.circle(synthetic_bgr, (345, 180), 20, (230, 230, 230), -1)
+        cv2.ellipse(synthetic_bgr, (345, 185), (35, 15), 0, 0, 360, (30, 50, 90), -1)
+
+        synthetic_rgb = cv2.cvtColor(synthetic_bgr, cv2.COLOR_BGR2RGB)
+        mock_overlay = apply_heatmap_on_image(synthetic_rgb, generate_mock_heatmap(synthetic_rgb))
+        image_b64 = encode_image_for_display(synthetic_rgb)
+        grad_cam_image_b64 = encode_image_for_display(mock_overlay)
+
+        demo_disease["heatmap_b64"] = grad_cam_image_b64
+        example_json = {
+            "disease": demo_disease,
+            "growth": demo_growth,
+            "recommendations": generate_recommendations(demo_disease, demo_growth),
+            "grad_cam_image_b64": grad_cam_image_b64,
+        }
+
+        return render_template(
+            "results.html",
+            results=example_json,
+            filename="demo_cotton.jpg",
+            image_b64=image_b64,
+            img_shape={"width": 512, "height": 384},
+            raw_json=json.dumps(example_json, indent=2),
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            grad_cam_image_b64=grad_cam_image_b64,
+            disease_info=disease_info_map.get("Healthy", {}),
+        )
+    except Exception as e:
+        logger.error(f"Demo route failed: {e}")
+        return redirect(url_for("index"))
+
+@app.route("/api/chat_test", methods=["GET"])
+def api_chat_test():
+    return jsonify({"status": "ok"})
+
+@app.route("/api/chat", methods=["POST"])
+@app.route("/api/chat/", methods=["POST"])
+def api_chat():
+    data = request.get_json(silent=True)
+    if not data or "message" not in data:
+        return jsonify({"reply": "I'm sorry, I didn't receive a message."}), 400
+
+    message = str(data["message"]).lower()
+    responses = {
+        r"\b(hello|hi|hey|howdy|greetings)\b": [
+            "Hello there! How can I assist you with your cotton crop today?",
+            "Hi! Need any help analyzing your farm data?"
+        ],
+        r"\b(disease|diseases|sick|spots?|rot|blight)\b": [
+            "If you're noticing leaf spots or rotting, it could be Bacterial Blight or Target Spot. I highly recommend taking a picture and uploading it to our Analyze tab for an AI diagnosis."
+        ],
+        r"\b(yield|yields|harvest|harvests|produce)\b": [
+            "Yield depends heavily on the crop's health score and current growth stage. Check out the Dashboard for predictions across your fields!"
+        ],
+        r"\b(fertilizer|fertilizers|nutrient|nutrients|npk|potassium)\b": [
+            "Cotton responds well to a balanced NPK fertilizer. During the blooming and early boll stages, potassium is critical to maximize yield."
+        ],
+        r"\b(water|watering|irrigation|dry|drought)\b": [
+            "Maintain regular watering during the blossom phase. However, once bolls mature and start splitting, you should reduce irrigation to prevent rot."
+        ],
+        r"\b(pest|pests|worm|worms|aphid|aphids|bug|bugs|insect|insects|bollworm)\b": [
+            "Pests like Pink Bollworm and Aphids are common enemies of cotton. I recommend deploying pheromone traps and scouting the fields twice a week."
+        ],
+        r"\b(weather|temperature|rain|rainfall|humidity|climate)\b": [
+            "Weather plays a huge role in cotton health. Hot, dry spells stress bolls while excess rain can encourage fungal diseases. Use our weather tab to monitor conditions."
+        ],
+        r"\b(soil|soils|ph|minerals|clay|loam|sandy)\b": [
+            "Cotton thrives in well-draining loamy soil with a pH of 5.8–8.0. Conduct a soil test before the season to identify any nutrient deficiencies."
+        ],
+        r"\b(grow|growth|growing|stage|stages|seedling|boll|bolls|flower|flowering)\b": [
+            "Cotton growth has 5 key stages: germination, seedling, vegetative, flowering/boll formation, and maturity. Each stage has unique care needs — the flowering stage is most critical!"
+        ],
+        r"\b(spray|spraying|pesticide|pesticides|fungicide|herbicide|chemical)\b": [
+            "When spraying, always follow label rates and avoid spraying during peak heat or wind. Consider integrated pest management (IPM) to reduce chemical dependency."
+        ],
+        r"\b(thank(?:s|s you)?|awesome|great|perfect)\b": [
+            "You're welcome! Feel free to ask any time. Happy farming! 🌱",
+            "Glad I could help! Let me know if you have more questions about your cotton crop."
+        ],
+        r"\b(help|assist|support|guide|advice|tips?)\b": [
+            "I'm here to help! You can ask me about crop diseases, yield optimization, pest control, irrigation, fertilization, weather impacts, or soil health.",
+            "Sure! Try asking about cotton diseases, pest control, yield estimates, or upload an image in the Analyze tab for an instant AI diagnosis."
+        ],
+        r"\b(cotton|crop|crops|farm|farming|field|fields)\b": [
+            "Agri-Vision specializes in cotton crop analysis. Upload a field image in the Analyze tab for disease detection, yield prediction, and health scoring!"
+        ],
+    }
+
+    reply = "I'm your Agri-Vision AI assistant. I specialize in cotton farming, crop diseases, and yield optimization. How can I help you?"
+
+    for pattern, reply_options in responses.items():
+        if re.search(pattern, message):
+            reply = random.choice(reply_options)
+            break
+    return jsonify({"reply": reply})
+
+@app.route("/api/weather")
+def api_weather():
+    lat = request.args.get("lat", type=float)
+    lon = request.args.get("lon", type=float)
+    city = request.args.get("city", type=str)
+
+    if city and not (lat is not None and lon is not None):
+        geo = geocode_city(city)
+        if not geo:
+            return jsonify({"error": f"Could not geocode city: {city}"}), 404
+        lat, lon = geo["lat"], geo["lon"]
+
+    if lat is None or lon is None:
+        return jsonify({"error": "Provide lat & lon, or city"}), 400
+
+    owm_key = os.getenv("OPENWEATHER_API_KEY")
+    weather = get_weather(lat, lon, owm_key)
+    if not weather:
+        return jsonify({"error": "Weather data unavailable"}), 503
+
+    weather["weather_recommendations"] = generate_weather_recommendations(weather)
+    return jsonify({"status": "success", "weather": weather})
+
 # --- core api with redis cache & rate limiting ---
 @app.route("/api/analyze", methods=["POST"])
+@limiter.limit("10 per minute")
 def api_analyze():
     if 'file' not in request.files:
         return jsonify({'error': 'No file uploaded'}), 400
@@ -789,7 +1446,6 @@ def api_analyze():
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         cache_key = f"inference_cache:{file_hash}"
         
-        # check cache
         if redis_client:
             cached = redis_client.get(cache_key)
             if cached:
@@ -799,7 +1455,6 @@ def api_analyze():
                 res.headers['X-Cache-Hit'] = '1'
                 return res
                 
-        # cache miss - decode and run
         logger.info("cache miss - running inference")
         image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
         if image is None:
@@ -815,7 +1470,6 @@ def api_analyze():
         }
         resp_json = json.dumps(resp_data)
         
-        # save to redis (24h ttl)
         if redis_client:
             redis_client.setex(cache_key, 86400, resp_json)
             
@@ -826,6 +1480,435 @@ def api_analyze():
         
     except Exception as e:
         logger.error(f"API analysis error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route("/api/batch_status/<job_id>", methods=["GET"])
+def api_batch_status(job_id):
+    """Get status of a batch job"""
+    from models import BatchJob, db
+    
+    job = BatchJob.query.get(job_id)
+    if not job:
+        return jsonify({'error': 'Batch job not found'}), 404
+    
+    job.completed_images = len([r for r in job.results if r.status == 'complete'])
+    job.failed_images = len([r for r in job.results if r.status == 'error'])
+    
+    if job.completed_images + job.failed_images >= job.total_images:
+        job.status = 'completed'
+        job.completed_at = datetime.utcnow()
+        db.session.commit()
+    
+    return jsonify(job.to_dict())
+
+@app.route("/api/batch_results/<job_id>", methods=["GET"])
+def api_batch_results(job_id):
+    """Get all results for a batch job"""
+    from models import BatchJob, db
+    
+    job = BatchJob.query.get(job_id)
+    if not job:
+        return jsonify({'error': 'Batch job not found'}), 404
+    
+    results = [r.to_dict() for r in job.results]
+    results.sort(key=lambda x: x['image_index'])
+    
+    return jsonify({
+        'job_id': job.id,
+        'status': job.status,
+        'total_images': job.total_images,
+        'completed_images': job.completed_images,
+        'failed_images': job.failed_images,
+        'results': results
+    })
+
+@app.route("/batch", methods=["GET", "POST"])
+@login_required
+def batch_upload_page():
+    """Batch upload page"""
+    if request.method == 'POST':
+        return redirect(url_for('batch_results_page', job_id=request.form.get('job_id')))
+    return render_template('batch_upload.html')
+
+@app.route("/batch/results/<job_id>")
+@login_required
+def batch_results_page(job_id):
+    """Batch results page"""
+    return render_template('batch_results.html', job_id=job_id)
+
+# --- Authentication Routes ---
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Login page"""
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    
+    if request.method == 'POST':
+        email = request.form.get('email')
+        password = request.form.get('password')
+        remember = request.form.get('remember')
+        
+        from models import User
+        user = User.query.filter_by(email=email).first()
+        
+        if user and user.check_password(password):
+            if not user.is_active:
+                flash('Your account has been deactivated. Please contact support.', 'danger')
+                return render_template('login.html')
+            
+            login_user(user, remember=remember)
+            user.last_login = datetime.utcnow()
+            db.session.commit()
+            
+            next_page = request.args.get('next')
+            return redirect(next_page) if next_page else redirect(url_for('index'))
+        else:
+            flash('Invalid email or password', 'danger')
+    
+    return render_template('login.html')
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    """Registration page"""
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    
+    if request.method == 'POST':
+        full_name = request.form.get('full_name')
+        email = request.form.get('email')
+        password = request.form.get('password')
+        confirm_password = request.form.get('confirm_password')
+        role = request.form.get('role', 'farmer')
+        
+        if not full_name or not email or not password:
+            flash('All fields are required', 'danger')
+            return render_template('register.html')
+        
+        if password != confirm_password:
+            flash('Passwords do not match', 'danger')
+            return render_template('register.html')
+        
+        if len(password) < 8:
+            flash('Password must be at least 8 characters', 'danger')
+            return render_template('register.html')
+        
+        from models import User
+        if User.query.filter_by(email=email).first():
+            flash('Email already registered', 'danger')
+            return render_template('register.html')
+        
+        user = User(
+            email=email,
+            full_name=full_name,
+            role=role
+        )
+        user.set_password(password)
+        
+        db.session.add(user)
+        db.session.commit()
+        
+        flash('Account created successfully! Please login.', 'success')
+        return redirect(url_for('login'))
+    
+    return render_template('register.html')
+
+@app.route("/logout")
+@login_required
+def logout():
+    """Logout user"""
+    logout_user()
+    flash('You have been logged out', 'info')
+    return redirect(url_for('login'))
+
+@app.route("/profile")
+@login_required
+def profile():
+    """User profile page"""
+    return render_template('profile.html')
+
+@app.route("/forgot_password", methods=["GET", "POST"])
+def forgot_password():
+    """Forgot password page"""
+    if request.method == 'POST':
+        email = request.form.get('email')
+        flash('Password reset link sent to your email (demo feature)', 'info')
+        return redirect(url_for('login'))
+    return render_template('login.html')
+
+# --- Geographic Disease Mapping ---
+
+@app.route("/disease-map")
+@login_required
+def disease_map():
+    """Disease map page"""
+    return render_template('disease_map.html')
+
+@app.route("/api/disease-map")
+@login_required
+def api_disease_map():
+    """API endpoint for disease map data"""
+    from models import AnalysisHistory
+    
+    disease_filter = request.args.get('disease', 'all')
+    time_filter = request.args.get('time', 'all')
+    confidence_filter = float(request.args.get('confidence', 0))
+    
+    if current_user.is_researcher():
+        query = AnalysisHistory.query
+    else:
+        query = AnalysisHistory.query.filter_by(user_id=current_user.id)
+    
+    if time_filter == 'today':
+        query = query.filter(AnalysisHistory.created_at >= datetime.utcnow().replace(hour=0, minute=0, second=0))
+    elif time_filter == 'week':
+        query = query.filter(AnalysisHistory.created_at >= datetime.utcnow() - timedelta(days=7))
+    elif time_filter == 'month':
+        query = query.filter(AnalysisHistory.created_at >= datetime.utcnow() - timedelta(days=30))
+    elif time_filter == 'year':
+        query = query.filter(AnalysisHistory.created_at >= datetime.utcnow() - timedelta(days=365))
+    
+    analyses = query.all()
+    
+    filtered_analyses = []
+    for a in analyses:
+        if disease_filter != 'all':
+            if not a.disease_result or a.disease_result.get('predicted_class') != disease_filter:
+                continue
+        
+        if confidence_filter > 0:
+            if not a.confidence or a.confidence < confidence_filter / 100:
+                continue
+        
+        if a.latitude and a.longitude:
+            filtered_analyses.append(a)
+    
+    total_analyses = len(filtered_analyses)
+    healthy_count = sum(1 for a in filtered_analyses if a.disease_result and a.disease_result.get('predicted_class') == 'healthy')
+    diseased_count = total_analyses - healthy_count
+    avg_health_score = sum(a.health_score for a in filtered_analyses if a.health_score) / len([a for a in filtered_analyses if a.health_score]) if filtered_analyses else 0
+    regions = set(a.region for a in filtered_analyses if a.region)
+    
+    return jsonify({
+        'analyses': [a.to_dict() for a in filtered_analyses],
+        'stats': {
+            'total_analyses': total_analyses,
+            'healthy_count': healthy_count,
+            'diseased_count': diseased_count,
+            'avg_health_score': avg_health_score,
+            'regions_count': len(regions)
+        }
+    })
+
+# --- Advanced Dashboard ---
+
+@app.route("/dashboard")
+@login_required
+def dashboard():
+    """Advanced dashboard page"""
+    return render_template('dashboard.html')
+
+@app.route("/api/dashboard-stats")
+@login_required
+def api_dashboard_stats():
+    """API endpoint for dashboard statistics"""
+    from models import AnalysisHistory
+    
+    if current_user.is_researcher():
+        analyses = AnalysisHistory.query.all()
+    else:
+        analyses = AnalysisHistory.query.filter_by(user_id=current_user.id).all()
+    
+    total_analyses = len(analyses)
+    healthy_count = sum(1 for a in analyses if a.disease_result and a.disease_result.get('predicted_class') == 'healthy')
+    diseased_count = total_analyses - healthy_count
+    avg_health_score = sum(a.health_score for a in analyses if a.health_score) / len([a for a in analyses if a.health_score]) if analyses else 0
+    
+    disease_counts = defaultdict(int)
+    for a in analyses:
+        if a.disease_result:
+            disease = a.disease_result.get('predicted_class', 'unknown')
+            disease_counts[disease] += 1
+    
+    disease_distribution = {
+        'labels': [d.replace('_', ' ').title() for d in disease_counts.keys()],
+        'values': list(disease_counts.values())
+    }
+    
+    trend_labels = []
+    trend_data = defaultdict(list)
+    for i in range(7):
+        date = datetime.utcnow() - timedelta(days=6-i)
+        trend_labels.append(date.strftime('%b %d'))
+        
+        day_analyses = [a for a in analyses if a.created_at.date() == date.date()]
+        for a in day_analyses:
+            if a.disease_result:
+                disease = a.disease_result.get('predicted_class', 'unknown')
+                trend_data[disease].append(1)
+    
+    trend_datasets = []
+    colors = ['#22c55e', '#ef4444', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4']
+    for idx, (disease, counts) in enumerate(trend_data.items()):
+        daily_counts = []
+        for i in range(7):
+            date = datetime.utcnow() - timedelta(days=6-i)
+            day_analyses = [a for a in analyses if a.created_at.date() == date.date()]
+            count = sum(1 for a in day_analyses if a.disease_result and a.disease_result.get('predicted_class') == disease)
+            daily_counts.append(count)
+        
+        trend_datasets.append({
+            'label': disease.replace('_', ' ').title(),
+            'data': daily_counts,
+            'borderColor': colors[idx % len(colors)],
+            'backgroundColor': colors[idx % len(colors)] + '20',
+            'fill': False,
+            'tension': 0.4
+        })
+    
+    disease_trends = {
+        'labels': trend_labels,
+        'datasets': trend_datasets
+    }
+    
+    growth_counts = defaultdict(int)
+    for a in analyses:
+        if a.growth_result:
+            stage = a.growth_result.get('main_class', 'unknown')
+            growth_counts[stage] += 1
+    
+    growth_distribution = {
+        'labels': [g.replace('_', ' ').title() for g in growth_counts.keys()],
+        'values': list(growth_counts.values())
+    }
+    
+    region_counts = defaultdict(int)
+    for a in analyses:
+        if a.region:
+            region_counts[a.region] += 1
+    
+    regional_data = {
+        'labels': list(region_counts.keys()),
+        'values': list(region_counts.values())
+    }
+    
+    recent_analyses = sorted(analyses, key=lambda x: x.created_at, reverse=True)[:10]
+    recent_activity = []
+    for a in recent_analyses:
+        disease = a.disease_result.get('predicted_class', 'unknown') if a.disease_result else 'unknown'
+        activity_type = 'disease' if disease != 'healthy' else 'healthy'
+        icon = 'exclamation-triangle' if disease != 'healthy' else 'check-circle'
+        
+        recent_activity.append({
+            'type': activity_type,
+            'icon': icon,
+            'title': f'{disease.replace("_", " ").title()} Detected',
+            'description': f'Confidence: {(a.confidence * 100):.1f}%' if a.confidence else 'No confidence data',
+            'time': a.created_at.strftime('%b %d, %Y %H:%M')
+        })
+    
+    return jsonify({
+        'stats': {
+            'total_analyses': total_analyses,
+            'healthy_count': healthy_count,
+            'diseased_count': diseased_count,
+            'avg_health_score': avg_health_score
+        },
+        'disease_distribution': disease_distribution,
+        'disease_trends': disease_trends,
+        'growth_distribution': growth_distribution,
+        'regional_data': regional_data,
+        'recent_activity': recent_activity
+    })
+
+# --- Automated Reporting ---
+
+@app.route("/reports")
+@login_required
+def reports():
+    """Reports page"""
+    return render_template('reports.html')
+
+@app.route("/api/generate-report/<analysis_id>")
+@login_required
+def generate_report(analysis_id):
+    """Generate PDF report for a single analysis"""
+    from models import AnalysisHistory
+    from services.report_service import ReportGenerator
+    
+    analysis = AnalysisHistory.query.get(analysis_id)
+    if not analysis:
+        return jsonify({'error': 'Analysis not found'}), 404
+    
+    if not current_user.is_researcher() and analysis.user_id != current_user.id:
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        generator = ReportGenerator()
+        report_data = {
+            'disease_result': analysis.disease_result,
+            'growth_result': analysis.growth_result,
+            'health_score': analysis.health_score,
+            'confidence': analysis.confidence
+        }
+        
+        user_info = {
+            'full_name': current_user.full_name,
+            'email': current_user.email,
+            'role': current_user.role
+        }
+        
+        pdf_bytes = generator.generate_analysis_report(report_data, user_info)
+        
+        return send_file(
+            BytesIO(pdf_bytes),
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'analysis_report_{analysis_id}.pdf'
+        )
+    except Exception as e:
+        logger.error(f"Error generating report: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route("/api/generate-summary-report")
+@login_required
+def generate_summary_report():
+    """Generate summary PDF report for all analyses"""
+    from models import AnalysisHistory
+    from services.report_service import ReportGenerator
+    
+    days = request.args.get('days', 30, type=int)
+    start_date = datetime.utcnow() - timedelta(days=days)
+    
+    if current_user.is_researcher():
+        analyses = AnalysisHistory.query.filter(AnalysisHistory.created_at >= start_date).all()
+    else:
+        analyses = AnalysisHistory.query.filter(
+            AnalysisHistory.user_id == current_user.id,
+            AnalysisHistory.created_at >= start_date
+        ).all()
+    
+    try:
+        generator = ReportGenerator()
+        analyses_data = [a.to_dict() for a in analyses]
+        
+        user_info = {
+            'full_name': current_user.full_name,
+            'email': current_user.email,
+            'role': current_user.role
+        }
+        
+        date_range = f"Last {days} days"
+        pdf_bytes = generator.generate_summary_report(analyses_data, user_info, date_range)
+        
+        return send_file(
+            BytesIO(pdf_bytes),
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=f'summary_report_{datetime.now().strftime("%Y%m%d")}.pdf'
+        )
+    except Exception as e:
+        logger.error(f"Error generating summary report: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
