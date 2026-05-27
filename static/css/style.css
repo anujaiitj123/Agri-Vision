@@ -2804,11 +2804,21 @@ fix-stories-card-alignment
     box-shadow: 0 12px 35px rgba(93, 211, 139, 0.15);
 }
 
-.stories-grid .card-body {
+.story-grid .card-body {
     display: flex;
     flex-direction: column;
     justify-content: space-between;
     height: 100%;
+}
+
+.story-card {
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.story-card:hover {
+    transform: translateY(-6px);
+    box-shadow: 0 10px 25px rgba(0,0,0,0.12);
 }
 
 @media (max-width: 768px) {
