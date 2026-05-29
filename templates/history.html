@@ -147,12 +147,16 @@ analyzeBtn.addEventListener('click', async () => {
 function displayInsights(insights, totalOccurrences, weatherAvailable) {
     document.getElementById('totalOccurrences').textContent = totalOccurrences;
     
-    if (insights.most_common_disease) {
+    if (insights && insights.most_common_disease) {
         document.getElementById('mostCommonDisease').textContent = insights.most_common_disease;
+    } else {
+        document.getElementById('mostCommonDisease').textContent = 'N/A';
     }
     
-    if (insights.high_risk_region) {
+    if (insights && insights.high_risk_region) {
         document.getElementById('highRiskRegion').textContent = insights.high_risk_region;
+    } else {
+        document.getElementById('highRiskRegion').textContent = 'N/A';
     }
     
     document.getElementById('weatherDataStatus').textContent = weatherAvailable ? 'Available' : 'Not Available';
